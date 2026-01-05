@@ -131,3 +131,80 @@ pub async fn new<'a, const N_RX: usize, const N_TX: usize, C: Chip, SPI: SpiDevi
         },
     ))
 }
+
+/// Background runner for the driver using polling.
+///
+/// You must call `.run()` in a background task for the driver to operate.
+pub struct RunnerPolled<'d, C: Chip, SPI: SpiDevice> {
+    mac: WiznetDevice<C, SPI>,
+    ch: ch::Runner<'d, MTU>,
+    poll_interval: Duration,
+}
+
+/// Create a Wiznet ethernet chip driver for [`embassy-net`](https://crates.io/crates/embassy-net).
+///
+/// This returns two structs:
+/// - a `Device` that you must pass to the `embassy-net` stack.
+/// - a `RunnerPolled`. You must call `.run()` on it in a background task.
+pub async fn new_polled<'a, const N_RX: usize, const N_TX: usize, C: Chip, SPI: SpiDevice>(
+    mac_addr: [u8; 6],
+    state: &'a mut State<N_RX, N_TX>,
+    spi_dev: SPI,
+    poll_interval: Duration,
+) -> Result<(Device<'a>, RunnerPolled<'a, C, SPI>), InitError<SPI::Error>> {
+    // Wait for PLL lock. Some chips are slower than others.
+    // Slowest is w5100s which is 100ms, so let's just wait that.
+    Timer::after_millis(100).await;
+
+    let mac = WiznetDevice::new(spi_dev, mac_addr).await?;
+
+    let (runner, device) = ch::new(&mut state.ch_state, ch::driver::HardwareAddress::Ethernet(mac_addr));
+
+    Ok((
+        device,
+        RunnerPolled {
+            ch: runner,
+            mac,
+            poll_interval,
+        },
+    ))
+}
+
+/// You must call this in a background task for the driver to operate.
+impl<'d, C: Chip, SPI: SpiDevice> RunnerPolled<'d, C, SPI> {
+    /// Run the driver.
+    pub async fn run(mut self) -> ! {
+        let (state_chan, mut rx_chan, mut tx_chan) = self.ch.split();
+        let mut tick_poll = Ticker::every(self.poll_interval);
+        let mut tick_state = Ticker::every(Duration::from_millis(500));
+        loop {
+            match select3(
+                async {
+                    tick_poll.next().await;
+                    rx_chan.rx_buf().await
+                },
+                tx_chan.tx_buf(),
+                tick_state.next(),
+            )
+            .await
+            {
+                Either3::First(p) => {
+                    if let Ok(n) = self.mac.read_frame(p).await {
+                        rx_chan.rx_done(n);
+                    }
+                }
+                Either3::Second(p) => {
+                    self.mac.write_frame(p).await.ok();
+                    tx_chan.tx_done();
+                }
+                Either3::Third(()) => {
+                    if self.mac.is_link_up().await {
+                        state_chan.set_link_state(LinkState::Up);
+                    } else {
+                        state_chan.set_link_state(LinkState::Down);
+                    }
+                }
+            }
+        }
+    }
+}
