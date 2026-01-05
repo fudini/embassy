@@ -570,7 +570,7 @@ fn main() {
             },
         );
     }
-    if chip_name.starts_with("stm32u5") {
+    if chip_name.starts_with("stm32u5") || chip_name.starts_with("stm32U3") {
         clock_gen.chained_muxes.insert(
             "ICLK",
             &PeripheralRccRegister {
@@ -1712,6 +1712,8 @@ fn main() {
         (("timer", "CH4"), quote!(crate::timer::Dma<Ch4>)),
         (("cordic", "WRITE"), quote!(crate::cordic::WriteDma)), // FIXME: stm32u5a crash on Cordic driver
         (("cordic", "READ"), quote!(crate::cordic::ReadDma)),   // FIXME: stm32u5a crash on Cordic driver
+        (("xspi", "RX"), quote!(crate::xspi::XDma)),
+        (("xspi", "RX"), quote!(crate::xspi::XDma)),
     ]
     .into();
 
@@ -2098,7 +2100,9 @@ fn main() {
             "dma" => quote!(crate::dma::DmaInfo::Dma(crate::pac::#dma)),
             "bdma" => quote!(crate::dma::DmaInfo::Bdma(crate::pac::#dma)),
             "gpdma" => quote!(crate::pac::#dma),
-            "lpdma" => quote!(unsafe { crate::pac::gpdma::Gpdma::from_ptr(crate::pac::#dma.as_ptr())}),
+            "lpdma" => {
+                quote!(unsafe { crate::pac::gpdma::Gpdma::from_ptr(crate::pac::#dma.as_ptr())})
+            }
             _ => panic!("bad dma channel kind {}", bi.kind),
         };
 
